@@ -1,0 +1,101 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // دالة مساعدة: هل المستخدم الحالي أدمين؟
+    // الأدمين هو أي حساب (Firebase Auth) عندو وثيقة بنفس الـ uid ديالو
+    // فمجموعة admins — هاد الوثيقة كتزاد يدوياً من Firebase Console
+    // (Firestore Database → admins → Add document → معرف الوثيقة = uid ديال الأدمين)
+    function isAdmin() {
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    // مجموعة الأدمينات: محد ما يقدر يكتب فيها من الموقع (غير من الكونسول يدوياً)،
+    // وكل حساب يقدر غير يتأكد من وثيقته الخاصة (استعمال داخلي فـ isAdmin فقط)
+    match /admins/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    // الأطباق: أي واحد يقدر يقراهم (الموقع العام)، لكن الكتابة (إضافة/تعديل/حذف)
+    // ما تخدمش غير على الأدمين
+    match /meals/{mealId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // الطلبات: أي زبون يقدر يصاوب طلب جديد
+    // قراءة الطلبات: الأدمين يقدر يقرا الكل، والزبون يقدر يقرا غير الطلبات ديالو
+    // (باش نقدرو نجمعو طلباتو فبطاقة العضوية)؛ التعديل/الحذف للأدمين فقط
+    match /orders/{orderId} {
+      allow create: if true;
+      allow read: if isAdmin() || (request.auth != null && resource.data.uid == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+
+    // الملفات الشخصية للزبناء (رقم الهاتف، الجنس، الصورة الرمزية...)
+    // كل زبون يقدر يقرا/يكتب فوثيقته الخاصة فقط، والأدمين يقدر يقرا الكل
+    match /users/{uid} {
+      allow read, create, update: if request.auth != null && request.auth.uid == uid;
+      // الزبون يقدر يحذف وثيقته الخاصة فقط (استعمال: "حذف الحساب نهائياً")
+      allow delete: if request.auth != null && request.auth.uid == uid;
+      allow read: if isAdmin();
+    }
+
+    // بطاقات العضوية: معرف الوثيقة = uid ديال الزبون صاحبها
+    // الزبون يقدر يقرا وثيقته وتتكتب/تتحدث تلقائياً بعد كل طلب مؤهل (3 أيام فما فوق)
+    // القراءة/الكتابة الكاملة متاحة للأدمين كذلك
+    match /members/{memberId} {
+      allow read, create, update: if request.auth != null && request.auth.uid == memberId;
+      // الزبون يقدر يحذف بطاقة العضوية ديالو عند حذف الحساب نهائياً
+      allow delete: if request.auth != null && request.auth.uid == memberId;
+      allow read, write: if isAdmin();
+    }
+
+    // ═══════ نظام النقاط والولاء ═══════
+
+    // سجل النقاط: كل عملية (كسب أو استعمال) وثيقة منفصلة ولا تتعدل ولا تتحذف أبداً.
+    // الرصيد الحقيقي = مجموع كل العمليات ديال الزبون (يتحسب فالتطبيق، ماشي وثيقة وحدة قابلة للتلاعب)
+    // أي حساب مسجل الدخول يقدر يكتب عملية (باش الصديق يقدر يعطي نقط لصاحبه لي دعاه، والأدمين يقدر يعدل يدوياً)
+    // لكن كل واحد يقرا غير العمليات ديالو هو، والأدمين يقرا الكل
+    match /pointsLog/{logId} {
+      allow create: if request.auth != null;
+      allow read: if isAdmin() || (request.auth != null && resource.data.uid == request.auth.uid);
+      allow update, delete: if false;
+    }
+
+    // كتالوج المكافآت: أي واحد يقدر يشوفه، الأدمين وحدو يقدر يزيد/يعدل/يحذف
+    match /rewards/{rewardId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // عمليات الاستبدال: الزبون يصاوب طلب استبدال لراسو، والأدمين يقدر يأكد/يشوف الكل
+    match /redemptions/{id} {
+      allow create: if request.auth != null;
+      allow read: if isAdmin() || (request.auth != null && resource.data.uid == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+
+    // إعدادات قواعد احتساب النقاط: أي واحد يقراها (باش التطبيق يحسب صحيح)، الأدمين وحدو يعدلها
+    match /config/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ═══════ الدردشة مع الدعم ═══════
+    // كل محادثة threadId = uid ديال الزبون. الزبون يبعث فـ thread ديالو هو فقط، والأدمين يبعث فأي thread
+    // القراءة: كل واحد يقرا غير الـ thread ديالو، الأدمين يقرا الكل
+    match /messages/{msgId} {
+      allow create: if request.auth != null && (
+        (request.resource.data.threadId == request.auth.uid &&
+         request.resource.data.senderUid == request.auth.uid &&
+         request.resource.data.senderRole == "customer") ||
+        isAdmin()
+      );
+      allow read, update: if isAdmin() || (request.auth != null && resource.data.threadId == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+  }
+}
